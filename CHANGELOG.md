@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - ReleaseDate
 
+### Added
+
+* Added support for [external data] (temporary tables) attached to a single query via `Query::with_external_table()`. ([#XXX])
+
+[external data]: https://clickhouse.com/docs/engines/table-engines/special/external-data
+
+[#XXX]: https://github.com/ClickHouse/clickhouse-rs/pull/XXX
+
 ## [0.15.1] - 2026-06-01
 
 ### Added
