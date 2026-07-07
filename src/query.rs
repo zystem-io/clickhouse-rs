@@ -1,4 +1,7 @@
-use hyper::{Method, Request, header::CONTENT_LENGTH};
+use hyper::{
+    Method, Request,
+    header::{CONTENT_LENGTH, CONTENT_TYPE},
+};
 use serde::Serialize;
 use std::fmt::Display;
 use tracing::Instrument;
@@ -7,6 +10,7 @@ use url::Url;
 use crate::{
     Client,
     error::{Error, Result},
+    external_data::{self, ExternalTable},
     formats,
     headers::with_request_headers,
     request_body::RequestBody,
@@ -24,6 +28,7 @@ use crate::settings;
 pub struct Query {
     client: Client,
     sql: SqlBuilder,
+    external_tables: Vec<ExternalTable>,
 }
 
 impl Query {
@@ -31,6 +36,7 @@ impl Query {
         Self {
             client: client.clone(),
             sql: SqlBuilder::new(template),
+            external_tables: vec![],
         }
     }
 
@@ -55,6 +61,19 @@ impl Query {
     #[track_caller]
     pub fn bind(mut self, value: impl Bind) -> Self {
         self.sql.bind_arg(value);
+        self
+    }
+
+    /// Attaches an [external table] to be processed as a temporary table for
+    /// this query only.
+    ///
+    /// The table is materialized once per request, so referencing it several
+    /// times in the query is cheaper than a `WITH` subquery, which the server
+    /// re-scans per reference. Call this repeatedly to attach several tables.
+    ///
+    /// [external table]: crate::external_data::ExternalTable
+    pub fn with_external_table(mut self, table: ExternalTable) -> Self {
+        self.external_tables.push(table);
         self
     }
 
@@ -236,6 +255,13 @@ impl Query {
 
         pairs.extend_pairs(self.client.roles.iter().map(|role| (settings::ROLE, role)));
 
+        // External tables carry their structure and format as query params.
+        // Their data travels in the multipart body built below.
+        for table in &self.external_tables {
+            pairs.append_pair(&format!("{}_structure", table.name()), table.structure());
+            pairs.append_pair(&format!("{}_format", table.name()), table.format_name());
+        }
+
         drop(pairs);
 
         let mut builder = Request::builder().method(Method::POST).uri(url.as_str());
@@ -247,10 +273,23 @@ impl Query {
             builder = builder.header("Accept-Encoding", "zstd");
         }
 
-        let content_length = query.len();
-        builder = builder.header(CONTENT_LENGTH, content_length.to_string());
+        // Without external data the query is the whole body. With it, the query
+        // becomes a `query` form field alongside one file part per table.
+        let body = if self.external_tables.is_empty() {
+            builder = builder.header(CONTENT_LENGTH, query.len().to_string());
+            RequestBody::full(query)
+        } else {
+            let multipart = external_data::build_multipart(&query, &self.external_tables);
+            builder = builder
+                .header(CONTENT_LENGTH, multipart.content_length().to_string())
+                .header(
+                    CONTENT_TYPE,
+                    format!("multipart/form-data; boundary={}", multipart.boundary),
+                );
+            RequestBody::multi(multipart.frames)
+        };
 
-        let request = builder.body(RequestBody::full(query)).map_err(|err| {
+        let request = builder.body(body).map_err(|err| {
             let err = Error::InvalidParams(Box::new(err));
             err.record_in_current_span("invalid params in query");
             err

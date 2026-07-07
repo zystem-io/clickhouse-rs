@@ -19,6 +19,7 @@ use std::{collections::HashMap, fmt::Display, sync::Arc};
 use tokio::sync::RwLock;
 
 pub mod error;
+pub mod external_data;
 pub mod insert;
 pub mod insert_formatted;
 #[cfg(feature = "inserter")]
